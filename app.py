@@ -26,19 +26,24 @@ app = Flask(__name__)
 
 # ==========================
 # TABELA DE FAIXAS CEP -> KM (de 100 em 100)
+# IMPORTANTE: Faixas mais específicas devem vir PRIMEIRO
 # ==========================
 FAIXAS_CEP_KM = [
     # RS - Rio Grande do Sul (origem: Frederico Westphalen 98400000)
-    ("98400000", "98419999", 10),    # Frederico Westphalen e região
-    ("98300000", "98499999", 50),    # Região próxima
+    # ORDEM IMPORTANTE: do mais específico para o mais genérico
+    ("98400000", "98419999", 10),    # Frederico Westphalen - LOCAL
+    ("98415000", "98419999", 10),    # Frederico Westphalen região imediata
+    ("98300000", "98399999", 50),    # Região próxima norte
+    ("98420000", "98499999", 50),    # Região próxima
     ("99700000", "99799999", 100),   # Erechim
+    ("98000000", "98299999", 150),   # Região norte RS
     ("99000000", "99099999", 200),   # Passo Fundo
     ("95000000", "95999999", 300),   # Caxias do Sul
     ("97000000", "97999999", 300),   # Santa Maria
     ("93000000", "93999999", 400),   # Novo Hamburgo / São Leopoldo
     ("92000000", "92999999", 450),   # Canoas
-    ("90000000", "91999999", 500),   # Porto Alegre e região metropolitana
     ("94000000", "94999999", 500),   # Gravataí / Alvorada
+    ("90000000", "91999999", 500),   # Porto Alegre e região metropolitana
     ("96000000", "96999999", 600),   # Pelotas / Rio Grande
     
     # SC - Santa Catarina
@@ -333,6 +338,7 @@ def parse_prods(prods_str: str) -> List[Dict[str, Any]]:
     if not prods_str:
         return itens
     
+    # Tray pode enviar com / ou |
     blocos = []
     for sep in ("/", "|"):
         if sep in prods_str:
@@ -354,20 +360,31 @@ def parse_prods(prods_str: str) -> List[Dict[str, Any]]:
             return 0.0
 
     def cm_to_m(x):
+        """Converte cm para metros se necessário"""
         if not x or x == 0:
             return 0.0
+        # Se maior que 20, assume que está em cm
         return x / 100.0 if x > 20 else x
 
     for raw in blocos:
         try:
             partes = raw.split(";")
             if len(partes) < 8:
+                print(f"[WARN] Item com menos de 8 campos: {raw}")
                 continue
-            comp, larg, alt, cub, qty, peso, codigo, valor = partes[:8]
+            
+            comp_raw, larg_raw, alt_raw, cub, qty, peso, codigo, valor = partes[:8]
+            
+            comp = cm_to_m(norm_num(comp_raw))
+            larg = cm_to_m(norm_num(larg_raw))
+            alt = cm_to_m(norm_num(alt_raw))
+            
+            print(f"[DEBUG] Parse: comp={comp_raw}->{comp:.2f}m, larg={larg_raw}->{larg:.2f}m, alt={alt_raw}->{alt:.2f}m")
+            
             item = {
-                "comp": cm_to_m(norm_num(comp)),
-                "larg": cm_to_m(norm_num(larg)),
-                "alt": cm_to_m(norm_num(alt)),
+                "comp": comp,
+                "larg": larg,
+                "alt": alt,
                 "cub": norm_num(cub),
                 "qty": int(norm_num(qty)) if norm_num(qty) > 0 else 1,
                 "peso": norm_num(peso),
@@ -376,15 +393,20 @@ def parse_prods(prods_str: str) -> List[Dict[str, Any]]:
             }
             itens.append(item)
         except Exception as e:
-            print(f"[WARN] Erro parse item: {raw} - {e}")
+            print(f"[ERROR] Erro parse item: {raw} - {e}")
     
     return itens
 
 # ==========================
 # ENDPOINTS
 # ==========================
-@app.route("/")
+@app.route("/", methods=["GET", "POST"])
 def index():
+    """Endpoint principal - redireciona para cálculo de frete se tiver parâmetros"""
+    # Se vier com parâmetros da Tray, processa como frete
+    if request.args.get("cep_destino") or request.args.get("prods"):
+        return frete()
+    
     return {
         "api": "Bakof Frete",
         "versao": "4.0 - Faixas de CEP",
@@ -392,6 +414,7 @@ def index():
         "endpoints": {
             "/health": "Status da API",
             "/frete": "Calcular frete",
+            "/": "Calcular frete (compatível Tray)",
             "/consultar-cep": "Consultar KM de um CEP"
         }
     }
@@ -423,22 +446,33 @@ def consultar_cep():
         "fonte": fonte
     }
 
-@app.route("/frete")
+@app.route("/frete", methods=["GET", "POST"])
 def frete():
-    # Autenticação
+    """Endpoint de cálculo de frete - compatível com Tray"""
+    # Autenticação (opcional - Tray não envia token sempre)
     token = request.args.get("token", "")
-    if token != TOKEN_SECRETO:
+    # Permite acesso sem token OU com token correto
+    if token and token != TOKEN_SECRETO:
         return Response("Token inválido", status=403)
 
     # Parâmetros
     cep_destino = request.args.get("cep_destino", "")
     prods = request.args.get("prods", "")
 
-    if not cep_destino or not prods:
-        return Response("Parâmetros insuficientes (cep_destino, prods)", status=400)
+    # Log para debug
+    print(f"[DEBUG] CEP Destino: {cep_destino}")
+    print(f"[DEBUG] Produtos: {prods}")
+
+    if not cep_destino:
+        return Response("Parâmetro 'cep_destino' obrigatório", status=400)
+    
+    if not prods:
+        return Response("Parâmetro 'prods' obrigatório", status=400)
 
     # Parse produtos
     itens = parse_prods(prods)
+    print(f"[DEBUG] Itens parseados: {len(itens)}")
+    
     if not itens:
         return Response("Nenhum item válido em 'prods'", status=400)
 
@@ -457,6 +491,7 @@ def frete():
 
     # Busca KM por faixa de CEP
     km, km_fonte = buscar_km_por_cep(cep_destino)
+    print(f"[DEBUG] KM calculado: {km} ({km_fonte})")
 
     # Calcula frete por produto
     total = 0.0
@@ -468,14 +503,20 @@ def frete():
         # Busca tamanho no catálogo
         tam_catalogo = DATA["catalogo"].get(nome)
         if tam_catalogo is None:
-            tam_catalogo = tamanho_peca_por_nome(nome, it["alt"], it["larg"])
+            # Usa a maior dimensão do produto
+            tam_catalogo = max(it["comp"], it["larg"], it["alt"])
+            # Se não tem dimensões, usa diâmetro padrão de 2m
             if tam_catalogo == 0:
-                tam_catalogo = max(it["comp"], it["larg"], it["alt"])
+                tam_catalogo = 2.0
+        
+        print(f"[DEBUG] Produto: {nome}, Tamanho: {tam_catalogo:.3f}m")
         
         # Calcula valores
         v_unit = calcula_valor_item(tam_catalogo, km, valor_km, tam_caminhao)
         v_tot = v_unit * max(1, it["qty"])
         total += v_tot
+        
+        print(f"[DEBUG] Valor unitário: R$ {v_unit:.2f}, Total: R$ {v_tot:.2f}")
         
         itens_xml.append(f"""
       <item>
@@ -485,6 +526,8 @@ def frete():
         <valor_unitario>{v_unit:.2f}</valor_unitario>
         <valor_total>{v_tot:.2f}</valor_total>
       </item>""")
+
+    print(f"[DEBUG] VALOR TOTAL: R$ {total:.2f}")
 
     # Monta resposta XML (formato Tray)
     uf = uf_por_cep(limpar_cep(cep_destino))
