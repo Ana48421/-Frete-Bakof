@@ -1,4 +1,4 @@
-# app.py — API de Frete com FAIXAS DE CEP (100 em 100 KM)
+# app.py — API de Frete com FAIXAS DE CEP (partindo de Campo Grande/MS)
 import os
 import math
 import re
@@ -10,12 +10,13 @@ from flask import Flask, request, Response
 # CONFIGURAÇÕES
 # ==========================
 TOKEN_SECRETO = os.getenv("TOKEN_SECRETO", "teste123")
-CEP_ORIGEM = os.getenv("CEP_ORIGEM", "98400000")  # Frederico Westphalen/RS
+CEP_ORIGEM = os.getenv("CEP_ORIGEM", "79108630")  # Campo Grande/MS - CD Principal
 ARQ_PLANILHA = os.getenv("PLANILHA_FRETE", "tabela de frete atualizada(2)(Recuperado Automaticamente).xlsx")
 
 DEFAULT_VALOR_KM = float(os.getenv("DEFAULT_VALOR_KM", "7.0"))
 DEFAULT_TAM_CAMINHAO = float(os.getenv("DEFAULT_TAM_CAMINHAO", "8.5"))
-DEFAULT_KM = float(os.getenv("DEFAULT_KM", "450.0"))
+DEFAULT_KM = float(os.getenv("DEFAULT_KM", "1500.0"))  # KM padrão para CEPs não encontrados
+DEFAULT_VALOR_FRETE = float(os.getenv("DEFAULT_VALOR_FRETE", "800.0"))  # Valor fixo para CEPs não encontrados
 
 PALAVRAS_IGNORAR = {
     "VALOR KM", "TAMANHO CAMINHAO", "TAMANHO CAMINHÃO",
@@ -26,114 +27,115 @@ app = Flask(__name__)
 
 # ==========================
 # TABELA DE FAIXAS CEP -> KM (de 100 em 100)
+# ORIGEM: CAMPO GRANDE/MS (CEP 79108630)
 # IMPORTANTE: Faixas mais específicas devem vir PRIMEIRO
 # ==========================
 FAIXAS_CEP_KM = [
-    # RS - Rio Grande do Sul (origem: Frederico Westphalen 98400000)
+    # MS - Mato Grosso do Sul (origem: Campo Grande 79108630)
     # ORDEM IMPORTANTE: do mais específico para o mais genérico
-    ("98400000", "98419999", 10),    # Frederico Westphalen - LOCAL
-    ("98415000", "98419999", 10),    # Frederico Westphalen região imediata
-    ("98300000", "98399999", 50),    # Região próxima norte
-    ("98420000", "98499999", 50),    # Região próxima
-    ("99700000", "99799999", 100),   # Erechim
-    ("98000000", "98299999", 150),   # Região norte RS
-    ("99000000", "99099999", 200),   # Passo Fundo
-    ("95000000", "95999999", 300),   # Caxias do Sul
-    ("97000000", "97999999", 300),   # Santa Maria
-    ("93000000", "93999999", 400),   # Novo Hamburgo / São Leopoldo
-    ("92000000", "92999999", 450),   # Canoas
-    ("94000000", "94999999", 500),   # Gravataí / Alvorada
-    ("90000000", "91999999", 500),   # Porto Alegre e região metropolitana
-    ("96000000", "96999999", 600),   # Pelotas / Rio Grande
+    ("79108000", "79108999", 10),    # Campo Grande - CD LOCAL
+    ("79000000", "79099999", 20),    # Campo Grande região central
+    ("79100000", "79199999", 30),    # Campo Grande região expandida
+    ("79200000", "79999999", 100),   # Interior de MS (Dourados, Três Lagoas, etc)
     
-    # SC - Santa Catarina
-    ("89800000", "89899999", 200),   # Chapecó
-    ("89500000", "89699999", 400),   # Região Oeste SC
-    ("89100000", "89299999", 500),   # Joinville
-    ("89000000", "89099999", 550),   # Blumenau
-    ("88000000", "88099999", 600),   # Florianópolis
-    ("88300000", "88499999", 650),   # Itajaí / Balneário Camboriú
-    ("88700000", "88899999", 700),   # Criciúma / Sul SC
+    # MT - Mato Grosso
+    ("78000000", "78099999", 700),   # Cuiabá
+    ("78100000", "78899999", 800),   # Interior MT
+    
+    # GO - Goiás
+    ("74000000", "76799999", 900),   # Goiânia e região
+    ("76800000", "76999999", 1000),  # Interior GO
+    
+    # DF - Distrito Federal
+    ("70000000", "72999999", 1100),  # Brasília
+    ("73000000", "73699999", 1150),  # Entorno DF
+    
+    # TO - Tocantins
+    ("77000000", "77999999", 1400),  # Tocantins
     
     # PR - Paraná
-    ("85800000", "85899999", 300),   # Cascavel
-    ("85850000", "85869999", 400),   # Foz do Iguaçu
-    ("87000000", "87199999", 600),   # Maringá
-    ("86000000", "86199999", 700),   # Londrina
-    ("84000000", "84999999", 750),   # Ponta Grossa
-    ("83000000", "83999999", 800),   # São José dos Pinhais
-    ("80000000", "82999999", 850),   # Curitiba e região
-    ("83400000", "83699999", 900),   # Paranaguá
+    ("87000000", "87199999", 500),   # Maringá
+    ("86000000", "86199999", 600),   # Londrina
+    ("85800000", "85899999", 700),   # Cascavel
+    ("84000000", "84999999", 800),   # Ponta Grossa
+    ("80000000", "82999999", 900),   # Curitiba e região
+    ("83000000", "83999999", 850),   # São José dos Pinhais
+    ("85850000", "85869999", 1000),  # Foz do Iguaçu
+    ("83400000", "83699999", 950),   # Paranaguá
     
-    # SP - São Paulo
-    ("18000000", "18999999", 1000),  # Interior oeste SP
-    ("17000000", "17999999", 1100),  # Bauru / Marília
-    ("15000000", "16999999", 1150),  # Sorocaba / Itu
+    # SP - São Paulo (região mais próxima de MS)
+    ("19000000", "19999999", 800),   # Interior oeste SP
+    ("18000000", "18999999", 900),   # Presidente Prudente região
+    ("17000000", "17999999", 1000),  # Bauru / Marília
+    ("16000000", "16999999", 1100),  # Araçatuba / São José Rio Preto
+    ("15000000", "15999999", 1150),  # Sorocaba / Itu
     ("14000000", "14999999", 1200),  # Ribeirão Preto / Araraquara
-    ("13000000", "13999999", 1250),  # Campinas / Piracicaba
-    ("12000000", "12999999", 1300),  # São José dos Campos / Taubaté
-    ("11000000", "11999999", 1350),  # Santos / Baixada Santista
-    ("09000000", "09999999", 1400),  # ABC Paulista
-    ("01000000", "08999999", 1400),  # São Paulo Capital e Região
-    ("19000000", "19999999", 1450),  # Campinas interior
+    ("13000000", "13999999", 1300),  # Campinas / Piracicaba
+    ("12000000", "12999999", 1400),  # São José dos Campos / Taubaté
+    ("09000000", "09999999", 1450),  # ABC Paulista
+    ("01000000", "08999999", 1450),  # São Paulo Capital e Região
+    ("11000000", "11999999", 1500),  # Santos / Baixada Santista
     
-    # RJ - Rio de Janeiro
-    ("28000000", "28999999", 1600),  # Interior Norte RJ
-    ("27000000", "27999999", 1650),  # Interior Sul RJ
-    ("25000000", "26999999", 1700),  # Interior / Petrópolis
-    ("24000000", "24999999", 1750),  # Niterói / São Gonçalo
-    ("20000000", "23999999", 1800),  # Rio de Janeiro Capital
+    # SC - Santa Catarina
+    ("89800000", "89899999", 700),   # Chapecó
+    ("89500000", "89699999", 800),   # Região Oeste SC
+    ("89100000", "89299999", 1000),  # Joinville
+    ("89000000", "89099999", 1100),  # Blumenau
+    ("88000000", "88099999", 1150),  # Florianópolis
+    ("88300000", "88499999", 1200),  # Itajaí / Balneário Camboriú
+    ("88700000", "88899999", 1250),  # Criciúma / Sul SC
+    
+    # RS - Rio Grande do Sul
+    ("98000000", "98999999", 1300),  # Norte RS (Frederico Westphalen, Erechim)
+    ("99000000", "99099999", 1400),  # Passo Fundo
+    ("95000000", "95999999", 1500),  # Caxias do Sul
+    ("97000000", "97999999", 1450),  # Santa Maria
+    ("93000000", "93999999", 1600),  # Novo Hamburgo / São Leopoldo
+    ("92000000", "92999999", 1650),  # Canoas
+    ("94000000", "94999999", 1700),  # Gravataí / Alvorada
+    ("90000000", "91999999", 1700),  # Porto Alegre e região metropolitana
+    ("96000000", "96999999", 1800),  # Pelotas / Rio Grande
     
     # MG - Minas Gerais
-    ("39000000", "39999999", 1400),  # Norte de Minas
-    ("38000000", "38999999", 1500),  # Montes Claros
-    ("37000000", "37999999", 1550),  # Sul de Minas
-    ("36000000", "36999999", 1600),  # Juiz de Fora
-    ("35000000", "35999999", 1650),  # Poços de Caldas / Pouso Alegre
+    ("38000000", "38999999", 1400),  # Montes Claros / Norte MG
+    ("39000000", "39999999", 1350),  # Vale do Jequitinhonha
+    ("37000000", "37999999", 1500),  # Sul de Minas
+    ("35000000", "35999999", 1600),  # Poços de Caldas / Pouso Alegre
+    ("36000000", "36999999", 1650),  # Juiz de Fora
     ("32000000", "34999999", 1700),  # Contagem / Betim
     ("30000000", "31999999", 1750),  # Belo Horizonte
     
+    # RJ - Rio de Janeiro
+    ("28000000", "28999999", 1700),  # Interior Norte RJ
+    ("27000000", "27999999", 1750),  # Interior Sul RJ
+    ("25000000", "26999999", 1800),  # Interior / Petrópolis
+    ("24000000", "24999999", 1850),  # Niterói / São Gonçalo
+    ("20000000", "23999999", 1900),  # Rio de Janeiro Capital
+    
     # ES - Espírito Santo
-    ("29000000", "29999999", 1900),  # Vitória e região
-    
-    # DF - Distrito Federal
-    ("70000000", "72999999", 2000),  # Brasília
-    ("73000000", "73699999", 2050),  # Entorno DF
-    
-    # GO - Goiás
-    ("74000000", "76999999", 2100),  # Goiânia e região
-    ("77000000", "77999999", 2500),  # Norte de Goiás
-    
-    # TO - Tocantins
-    ("77000000", "77999999", 2500),  # Tocantins
-    
-    # MS - Mato Grosso do Sul
-    ("79000000", "79999999", 1600),  # Campo Grande
-    
-    # MT - Mato Grosso
-    ("78000000", "78999999", 2200),  # Cuiabá
+    ("29000000", "29999999", 2000),  # Vitória e região
     
     # BA - Bahia
-    ("40000000", "42999999", 2600),  # Salvador
-    ("43000000", "48999999", 2700),  # Interior BA
+    ("40000000", "42999999", 2200),  # Salvador
+    ("43000000", "48999999", 2100),  # Interior BA (oeste mais próximo)
     
     # Nordeste
-    ("49000000", "49999999", 2700),  # SE - Sergipe
-    ("57000000", "57999999", 2800),  # AL - Alagoas
-    ("50000000", "56999999", 3000),  # PE - Pernambuco
-    ("58000000", "58999999", 3100),  # PB - Paraíba
-    ("59000000", "59999999", 3200),  # RN - Rio Grande do Norte
-    ("60000000", "63999999", 3400),  # CE - Ceará
-    ("64000000", "64999999", 3300),  # PI - Piauí
-    ("65000000", "65999999", 3500),  # MA - Maranhão
+    ("49000000", "49999999", 2400),  # SE - Sergipe
+    ("57000000", "57999999", 2500),  # AL - Alagoas
+    ("50000000", "56999999", 2600),  # PE - Pernambuco
+    ("58000000", "58999999", 2700),  # PB - Paraíba
+    ("59000000", "59999999", 2800),  # RN - Rio Grande do Norte
+    ("60000000", "63999999", 2900),  # CE - Ceará
+    ("64000000", "64999999", 2850),  # PI - Piauí
+    ("65000000", "65999999", 3000),  # MA - Maranhão
     
     # Norte
-    ("66000000", "68999999", 3800),  # PA - Pará
-    ("68900000", "68999999", 4100),  # AP - Amapá
-    ("69000000", "69899999", 4200),  # AM - Amazonas
-    ("69900000", "69999999", 4300),  # AC - Acre
-    ("76800000", "76999999", 4000),  # RO - Rondônia
-    ("69300000", "69399999", 4500),  # RR - Roraima
+    ("69300000", "69399999", 2200),  # RR - Roraima (via MT)
+    ("69900000", "69999999", 2400),  # AC - Acre
+    ("76800000", "76999999", 2000),  # RO - Rondônia
+    ("69000000", "69899999", 2600),  # AM - Amazonas
+    ("66000000", "68899999", 2800),  # PA - Pará
+    ("68900000", "68999999", 3200),  # AP - Amapá
 ]
 
 # ==========================
@@ -161,16 +163,19 @@ def buscar_km_por_cep(cep_destino: str) -> Tuple[float, str]:
     uf = uf_por_cep(cep)
     if uf:
         km_uf = {
-            "RS": 150, "SC": 450, "PR": 700, "SP": 1100, "RJ": 1500,
-            "MG": 1600, "ES": 1800, "MS": 1600, "MT": 2200, "DF": 2000,
-            "GO": 2100, "TO": 2500, "BA": 2600, "SE": 2700, "AL": 2800,
-            "PE": 3000, "PB": 3100, "RN": 3200, "CE": 3400, "PI": 3300,
-            "MA": 3500, "PA": 3800, "AP": 4100, "AM": 4200, "RO": 4000,
-            "AC": 4300, "RR": 4500,
+            "MS": 50, "MT": 700, "GO": 900, "DF": 1100, "TO": 1400,
+            "PR": 700, "SP": 1100, "SC": 1000, "RS": 1500,
+            "MG": 1600, "RJ": 1800, "ES": 2000, "BA": 2200,
+            "SE": 2400, "AL": 2500, "PE": 2600, "PB": 2700,
+            "RN": 2800, "CE": 2900, "PI": 2850, "MA": 3000,
+            "RR": 2200, "AC": 2400, "RO": 2000, "AM": 2600,
+            "PA": 2800, "AP": 3200,
         }
         return (float(km_uf.get(uf, DEFAULT_KM)), f"uf_{uf}")
     
-    return (DEFAULT_KM, "default")
+    # CEP não encontrado - retorna valor padrão
+    print(f"[WARN] CEP não encontrado: {cep} - usando valor padrão")
+    return (DEFAULT_KM, "cep_nao_encontrado")
 
 def uf_por_cep(cep8: str) -> Optional[str]:
     """Retorna UF baseado na faixa de CEP"""
@@ -409,7 +414,9 @@ def index():
     
     return {
         "api": "Bakof Frete",
-        "versao": "4.0 - Faixas de CEP",
+        "versao": "4.0 - CD Campo Grande/MS",
+        "cd_origem": "Campo Grande/MS",
+        "cep_origem": CEP_ORIGEM,
         "faixas_cadastradas": len(FAIXAS_CEP_KM),
         "endpoints": {
             "/health": "Status da API",
@@ -423,10 +430,13 @@ def index():
 def health():
     return {
         "ok": True,
+        "cd_origem": "Campo Grande/MS",
         "cep_origem": CEP_ORIGEM,
         "valores": DATA["consts"],
         "produtos_catalogo": len(DATA["catalogo"]),
         "faixas_cep": len(FAIXAS_CEP_KM),
+        "default_km": DEFAULT_KM,
+        "default_valor_frete": DEFAULT_VALOR_FRETE,
     }
 
 @app.route("/consultar-cep")
@@ -443,7 +453,9 @@ def consultar_cep():
         "cep": limpar_cep(cep),
         "uf": uf,
         "km": km,
-        "fonte": fonte
+        "fonte": fonte,
+        "origem": "Campo Grande/MS",
+        "valor_fixo_se_nao_encontrado": DEFAULT_VALOR_FRETE if fonte == "cep_nao_encontrado" else None
     }
 
 @app.route("/frete", methods=["GET", "POST"])
@@ -493,7 +505,38 @@ def frete():
     km, km_fonte = buscar_km_por_cep(cep_destino)
     print(f"[DEBUG] KM calculado: {km} ({km_fonte})")
 
-    # Calcula frete por produto
+    # Se CEP não encontrado, pode usar valor fixo ou calcular normalmente
+    usar_valor_fixo = (km_fonte == "cep_nao_encontrado")
+    
+    if usar_valor_fixo:
+        print(f"[INFO] CEP não encontrado - aplicando valor fixo de R$ {DEFAULT_VALOR_FRETE:.2f}")
+        total = DEFAULT_VALOR_FRETE
+        
+        # Monta XML com valor fixo
+        uf = uf_por_cep(limpar_cep(cep_destino))
+        xml = f"""<?xml version="1.0"?>
+<cotacao>
+  <resultado>
+    <codigo>BAKOF</codigo>
+    <transportadora>Bakof Logistica</transportadora>
+    <transporte>TERRESTRE</transporte>
+    <valor>{total:.2f}</valor>
+    <prazo_min>7</prazo_min>
+    <prazo_max>15</prazo_max>
+    <entrega_domiciliar>1</entrega_domiciliar>
+    <detalhes>
+      <origem>Campo Grande/MS</origem>
+      <km>{km:.1f}</km>
+      <uf>{uf or 'N/A'}</uf>
+      <fonte_km>{km_fonte}</fonte_km>
+      <valor_fixo>true</valor_fixo>
+      <observacao>CEP não encontrado - valor estimado</observacao>
+    </detalhes>
+  </resultado>
+</cotacao>"""
+        return Response(xml, mimetype="application/xml")
+
+    # Calcula frete por produto (fluxo normal)
     total = 0.0
     itens_xml = []
     
@@ -543,6 +586,7 @@ def frete():
     <prazo_max>7</prazo_max>
     <entrega_domiciliar>1</entrega_domiciliar>
     <detalhes>
+      <origem>Campo Grande/MS</origem>
       <km>{km:.1f}</km>
       <uf>{uf or 'N/A'}</uf>
       <fonte_km>{km_fonte}</fonte_km>
@@ -558,14 +602,17 @@ def frete():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
     print("=" * 70)
-    print("🚀 API de Frete Bakof - Sistema de Faixas de CEP")
+    print("🚀 API de Frete Bakof - CD Campo Grande/MS")
     print("=" * 70)
-    print(f"📍 CEP Origem: {CEP_ORIGEM}")
+    print(f"📍 CD Origem: Campo Grande/MS")
+    print(f"📮 CEP Origem: {CEP_ORIGEM}")
     print(f"🔑 Token: {TOKEN_SECRETO}")
     print(f"📊 Produtos: {len(DATA['catalogo'])}")
     print(f"📦 Faixas CEP: {len(FAIXAS_CEP_KM)}")
     print(f"💰 Valor/KM: R$ {DATA['consts']['VALOR_KM']:.2f}")
     print(f"🚛 Tamanho caminhão: {DATA['consts']['TAM_CAMINHAO']:.1f}m")
+    print(f"📍 KM padrão (CEP não encontrado): {DEFAULT_KM}km")
+    print(f"💵 Valor fixo (CEP não encontrado): R$ {DEFAULT_VALOR_FRETE:.2f}")
     print(f"🌐 Servidor: http://0.0.0.0:{port}")
     print("=" * 70)
     app.run(host="0.0.0.0", port=port, debug=False)
