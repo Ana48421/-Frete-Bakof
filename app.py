@@ -537,7 +537,6 @@ def frete():
   <resultado>
     <codigo>BAKOF</codigo>
     <transportadora>Bakof Logistica</transportadora>
-    <servico>Transporte Rodoviario</servico>
     <transporte>TERRESTRE</transporte>
     <valor>{total:.2f}</valor>
     <prazo_min>4</prazo_min>
