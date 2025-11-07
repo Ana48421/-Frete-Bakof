@@ -10,7 +10,18 @@ from flask import Flask, request, Response
 # CONFIGURAÇÕES
 # ==========================
 TOKEN_SECRETO = os.getenv("TOKEN_SECRETO", "teste123")
-CEP_ORIGEM = os.getenv("CEP_ORIGEM", "79108630")  # Campo Grande/MS
+
+# MÚLTIPLOS CENTROS DE DISTRIBUIÇÃO
+CENTROS_DISTRIBUICAO = [
+    {"nome": "Frederico Westphalen-RS", "cep": "98400000", "uf": "RS"},
+    {"nome": "Campo Grande-MS", "cep": "79108630", "uf": "MS"},
+    {"nome": "Tauá-CE", "cep": "63660000", "uf": "CE"},
+    {"nome": "Montes Claros-MG", "cep": "39404627", "uf": "MG"},
+]
+
+# CEP de origem padrão (pode ser sobrescrito por variável de ambiente)
+CEP_ORIGEM_DEFAULT = os.getenv("CEP_ORIGEM", "98400000")
+
 ARQ_PLANILHA = os.getenv("PLANILHA_FRETE", "tabela de frete atualizada(2)(Recuperado Automaticamente).xlsx")
 
 DEFAULT_VALOR_KM = float(os.getenv("DEFAULT_VALOR_KM", "7.0"))
@@ -25,114 +36,85 @@ PALAVRAS_IGNORAR = {
 app = Flask(__name__)
 
 # ==========================
-# TABELA DE FAIXAS CEP -> KM (de 100 em 100)
-# IMPORTANTE: Faixas mais específicas devem vir PRIMEIRO
+# TABELA DE FAIXAS CEP -> KM PARA CADA CENTRO DE DISTRIBUIÇÃO
 # ==========================
-FAIXAS_CEP_KM = [
-    # RS - Rio Grande do Sul (faixas atuais)
-    ("98400000", "98419999", 10),    # Frederico Westphalen - LOCAL
-    ("98415000", "98419999", 10),    # Frederico Westphalen região imediata
-    ("98300000", "98399999", 50),    # Região próxima norte
-    ("98420000", "98499999", 50),    # Região próxima
-    ("99700000", "99799999", 100),   # Erechim
-    ("98000000", "98299999", 150),   # Região norte RS
-    ("99000000", "99099999", 200),   # Passo Fundo
-    ("95000000", "95999999", 300),   # Caxias do Sul
-    ("97000000", "97999999", 300),   # Santa Maria
-    ("93000000", "93999999", 400),   # Novo Hamburgo / São Leopoldo
-    ("92000000", "92999999", 450),   # Canoas
-    ("94000000", "94999999", 500),   # Gravataí / Alvorada
-    ("90000000", "91999999", 500),   # Porto Alegre e região metropolitana
-    ("96000000", "96999999", 600),   # Pelotas / Rio Grande
-    
-    # SC - Santa Catarina
-    ("89800000", "89899999", 200),   # Chapecó
-    ("89500000", "89699999", 400),   # Região Oeste SC
-    ("89100000", "89299999", 500),   # Joinville
-    ("89000000", "89099999", 550),   # Blumenau
-    ("88000000", "88099999", 600),   # Florianópolis
-    ("88300000", "88499999", 650),   # Itajaí / Balneário Camboriú
-    ("88700000", "88899999", 700),   # Criciúma / Sul SC
-    
-    # PR - Paraná
-    ("85800000", "85899999", 300),   # Cascavel
-    ("85850000", "85869999", 400),   # Foz do Iguaçu
-    ("87000000", "87199999", 600),   # Maringá
-    ("86000000", "86199999", 700),   # Londrina
-    ("84000000", "84999999", 750),   # Ponta Grossa
-    ("83000000", "83999999", 800),   # São José dos Pinhais
-    ("80000000", "82999999", 850),   # Curitiba e região
-    ("83400000", "83699999", 900),   # Paranaguá
-    
-    # SP - São Paulo
-    ("18000000", "18999999", 1000),  # Interior oeste SP
-    ("17000000", "17999999", 1100),  # Bauru / Marília
-    ("15000000", "16999999", 1150),  # Sorocaba / Itu
-    ("14000000", "14999999", 1200),  # Ribeirão Preto / Araraquara
-    ("13000000", "13999999", 1250),  # Campinas / Piracicaba
-    ("12000000", "12999999", 1300),  # São José dos Campos / Taubaté
-    ("11000000", "11999999", 1350),  # Santos / Baixada Santista
-    ("09000000", "09999999", 1400),  # ABC Paulista
-    ("01000000", "08999999", 1400),  # São Paulo Capital e Região
-    ("19000000", "19999999", 1450),  # Campinas interior
-    
-    # RJ - Rio de Janeiro
-    ("28000000", "28999999", 1600),  # Interior Norte RJ
-    ("27000000", "27999999", 1650),  # Interior Sul RJ
-    ("25000000", "26999999", 1700),  # Interior / Petrópolis
-    ("24000000", "24999999", 1750),  # Niterói / São Gonçalo
-    ("20000000", "23999999", 1800),  # Rio de Janeiro Capital
-    
-    # MG - Minas Gerais
-    ("39000000", "39999999", 1400),  # Norte de Minas
-    ("38000000", "38999999", 1500),  # Montes Claros
-    ("37000000", "37999999", 1550),  # Sul de Minas
-    ("36000000", "36999999", 1600),  # Juiz de Fora
-    ("35000000", "35999999", 1650),  # Poços de Caldas / Pouso Alegre
-    ("32000000", "34999999", 1700),  # Contagem / Betim
-    ("30000000", "31999999", 1750),  # Belo Horizonte
-    
-    # ES - Espírito Santo
-    ("29000000", "29999999", 1900),  # Vitória e região
-    
-    # DF - Distrito Federal
-    ("70000000", "72999999", 2000),  # Brasília
-    ("73000000", "73699999", 2050),  # Entorno DF
-    
-    # GO - Goiás
-    ("74000000", "76999999", 2100),  # Goiânia e região
-    ("77000000", "77999999", 2500),  # Norte de Goiás
-    
-    # TO - Tocantins
-    ("77000000", "77999999", 2500),  # Tocantins
-    
-    # MS - Mato Grosso do Sul
-    ("79000000", "79999999", 1600),  # Campo Grande
-    
-    # MT - Mato Grosso
-    ("78000000", "78999999", 2200),  # Cuiabá
-    
-    # BA - Bahia
-    ("40000000", "42999999", 2600),  # Salvador
-    ("43000000", "48999999", 2700),  # Interior BA
-    
-    # Nordeste
-    ("49000000", "49999999", 2700),  # SE - Sergipe
-    ("57000000", "57999999", 2800),  # AL - Alagoas
-    ("50000000", "56999999", 3000),  # PE - Pernambuco
-    ("58000000", "58999999", 3100),  # PB - Paraíba
-    ("59000000", "59999999", 3200),  # RN - Rio Grande do Norte
-    ("60000000", "63999999", 3400),  # CE - Ceará
-    ("64000000", "64999999", 3300),  # PI - Piauí
-    ("65000000", "65999999", 3500),  # MA - Maranhão
-    
-    # Norte
-    ("66000000", "68999999", 3800),  # PA - Pará
-    ("68900000", "68999999", 4100),  # AP - Amapá
-    ("69000000", "69899999", 4200),  # AM - Amazonas
-    ("69900000", "69999999", 4300),  # AC - Acre
-    ("76800000", "76999999", 4000),  # RO - Rondônia
-    ("69300000", "69399999", 4500),  # RR - Roraima
+
+# Frederico Westphalen-RS (98400000)
+FAIXAS_FREDERICO_WESTPHALEN = [
+    ("98400000", "98419999", 10),    # Local
+    ("98415000", "98419999", 10),
+    ("98300000", "98399999", 50),
+    ("98420000", "98499999", 50),
+    ("99700000", "99799999", 100),
+    ("98000000", "98299999", 150),
+    ("99000000", "99099999", 200),
+    ("95000000", "95999999", 300),
+    ("97000000", "97999999", 300),
+    ("93000000", "93999999", 400),
+    ("92000000", "92999999", 450),
+    ("94000000", "94999999", 500),
+    ("90000000", "91999999", 500),
+    ("96000000", "96999999", 600),
+    ("89800000", "89899999", 200),   # SC
+    ("89500000", "89699999", 400),
+    ("89100000", "89299999", 500),
+    ("89000000", "89099999", 550),
+    ("88000000", "88099999", 600),
+    ("88300000", "88499999", 650),
+    ("88700000", "88899999", 700),
+    ("85800000", "85899999", 300),   # PR
+    ("85850000", "85869999", 400),
+    ("87000000", "87199999", 600),
+    ("86000000", "86199999", 700),
+    ("84000000", "84999999", 750),
+    ("83000000", "83999999", 800),
+    ("80000000", "82999999", 850),
+]
+
+# Campo Grande-MS (79108630)
+FAIXAS_CAMPO_GRANDE = [
+    ("79100000", "79129999", 10),    # Local
+    ("79000000", "79999999", 50),    # MS todo
+    ("78000000", "78999999", 300),   # MT - Cuiabá
+    ("76800000", "76999999", 400),   # RO - Rondônia
+    ("85800000", "85899999", 500),   # PR - Cascavel
+    ("85850000", "85869999", 600),   # PR - Foz do Iguaçu
+    ("80000000", "82999999", 900),   # PR - Curitiba
+    ("87000000", "87199999", 800),   # PR - Maringá
+    ("18000000", "18999999", 700),   # SP - Interior oeste
+    ("01000000", "08999999", 1000),  # SP - Capital
+]
+
+# Tauá-CE (63660000)
+FAIXAS_TAUA = [
+    ("63660000", "63669999", 10),    # Local
+    ("63600000", "63699999", 50),    # Região
+    ("60000000", "63999999", 200),   # CE todo
+    ("64000000", "64999999", 250),   # PI - Piauí
+    ("59000000", "59999999", 300),   # RN
+    ("58000000", "58999999", 350),   # PB
+    ("50000000", "56999999", 400),   # PE
+    ("57000000", "57999999", 450),   # AL
+    ("49000000", "49999999", 500),   # SE
+    ("65000000", "65999999", 300),   # MA
+    ("40000000", "48999999", 800),   # BA
+    ("66000000", "68999999", 1200),  # PA
+]
+
+# Montes Claros-MG (39404627)
+FAIXAS_MONTES_CLAROS = [
+    ("39400000", "39419999", 10),    # Local
+    ("39000000", "39999999", 100),   # Norte MG
+    ("38000000", "38999999", 150),   # Norte MG
+    ("30000000", "31999999", 300),   # BH
+    ("32000000", "34999999", 280),   # Contagem/Betim
+    ("35000000", "35999999", 250),   # Sul de Minas
+    ("36000000", "36999999", 200),   # Juiz de Fora
+    ("37000000", "37999999", 220),   # Sul de Minas
+    ("40000000", "48999999", 400),   # BA
+    ("29000000", "29999999", 500),   # ES
+    ("70000000", "72999999", 600),   # DF
+    ("74000000", "76999999", 650),   # GO
 ]
 
 # ==========================
@@ -142,22 +124,40 @@ def limpar_cep(cep: str) -> str:
     """Remove formatação e retorna 8 dígitos"""
     s = re.sub(r'\D', '', str(cep or ""))
     return s[:8].zfill(8) if s else "00000000"
-
-def buscar_km_por_cep(cep_destino: str) -> Tuple[float, str]:
     """
-    Busca KM baseado em faixas de CEP
-    Retorna: (km, fonte)
+    Busca KM baseado no CEP de origem e destino
+    Retorna: (km, fonte, centro_distribuicao)
     """
-    cep = limpar_cep(cep_destino)
-    cep_num = int(cep)
+    cep_dest = limpar_cep(cep_destino)
+    cep_dest_num = int(cep_dest)
     
-    # Busca na tabela de faixas
-    for cep_ini, cep_fim, km in FAIXAS_CEP_KM:
-        if int(cep_ini) <= cep_num <= int(cep_fim):
-            return (float(km), "faixa_cep")
+    # Identifica qual centro de distribuição está sendo usado
+    cep_orig_limpo = limpar_cep(cep_origem)
+    centro_nome = "Desconhecido"
+    
+    for centro in CENTROS_DISTRIBUICAO:
+        if limpar_cep(centro["cep"]) == cep_orig_limpo:
+            centro_nome = centro["nome"]
+            break
+    
+    # Seleciona a tabela de faixas correta
+    faixas = []
+    if cep_orig_limpo == "98400000":
+        faixas = FAIXAS_FREDERICO_WESTPHALEN
+    elif cep_orig_limpo == "79108630":
+        faixas = FAIXAS_CAMPO_GRANDE
+    elif cep_orig_limpo == "63660000":
+        faixas = FAIXAS_TAUA
+    elif cep_orig_limpo == "39404627":
+        faixas = FAIXAS_MONTES_CLAROS
+    
+    # Busca na tabela específica
+    for cep_ini, cep_fim, km in faixas:
+        if int(cep_ini) <= cep_dest_num <= int(cep_fim):
+            return (float(km), f"faixa_{centro_nome}", centro_nome)
     
     # Fallback por UF
-    uf = uf_por_cep(cep)
+    uf = uf_por_cep(cep_dest)
     if uf:
         km_uf = {
             "RS": 150, "SC": 450, "PR": 700, "SP": 1100, "RJ": 1500,
@@ -167,9 +167,29 @@ def buscar_km_por_cep(cep_destino: str) -> Tuple[float, str]:
             "MA": 3500, "PA": 3800, "AP": 4100, "AM": 4200, "RO": 4000,
             "AC": 4300, "RR": 4500,
         }
-        return (float(km_uf.get(uf, DEFAULT_KM)), f"uf_{uf}")
+        return (float(km_uf.get(uf, DEFAULT_KM)), f"uf_{uf}", centro_nome)
     
-    return (DEFAULT_KM, "default")
+    return (DEFAULT_KM, "default", centro_nome)
+
+def escolher_melhor_origem(cep_destino: str) -> Tuple[str, float, str]:
+    """
+    Escolhe o centro de distribuição mais próximo do destino
+    Retorna: (cep_origem, km, nome_centro)
+    """
+    melhor_km = float('inf')
+    melhor_origem = CENTROS_DISTRIBUICAO[0]["cep"]
+    melhor_centro = CENTROS_DISTRIBUICAO[0]["nome"]
+    melhor_fonte = "default"
+    
+    for centro in CENTROS_DISTRIBUICAO:
+        km, fonte, nome = buscar_km_por_cep_e_origem(centro["cep"], cep_destino)
+        if km < melhor_km:
+            melhor_km = km
+            melhor_origem = centro["cep"]
+            melhor_centro = nome
+            melhor_fonte = fonte
+    
+    return (melhor_origem, melhor_km, melhor_centro)
 
 def uf_por_cep(cep8: str) -> Optional[str]:
     """Retorna UF baseado na faixa de CEP"""
@@ -233,7 +253,7 @@ def carregar_constantes(xls: pd.ExcelFile) -> Dict[str, float]:
             raw = pd.read_excel(xls, aba, header=None)
             for _, row in raw.iterrows():
                 texto = " ".join([str(v).upper() for v in row if isinstance(v, str)])
-                if "VALOR" in texto ou "KM" in texto:
+                if "VALOR" in texto or "KM" in texto:
                     num = extrai_numero_linha(row)
                     if num and 3 <= num <= 50:
                         valor_km = num
@@ -422,25 +442,39 @@ def index():
 def health():
     return {
         "ok": True,
-        "cep_origem": CEP_ORIGEM,
+        "centros_distribuicao": [
+            {"nome": cd["nome"], "cep": cd["cep"], "uf": cd["uf"]} 
+            for cd in CENTROS_DISTRIBUICAO
+        ],
         "valores": DATA["consts"],
         "produtos_catalogo": len(DATA["catalogo"]),
-        "faixas_cep": len(FAIXAS_CEP_KM),
     }
 
 @app.route("/consultar-cep")
 def consultar_cep():
     """Endpoint para consultar KM de um CEP específico"""
     cep = request.args.get("cep", "")
+    origem = request.args.get("origem", "")  # Origem específica (opcional)
+    
     if not cep:
         return {"erro": "Informe o parâmetro 'cep'"}
     
-    km, fonte = buscar_km_por_cep(cep)
+    if origem:
+        # Consulta com origem específica
+        km, fonte, centro = buscar_km_por_cep_e_origem(origem, cep)
+        cep_origem = origem
+    else:
+        # Escolhe melhor origem automaticamente
+        cep_origem, km, centro = escolher_melhor_origem(cep)
+        fonte = f"auto_{centro}"
+    
     uf = uf_por_cep(limpar_cep(cep))
     
     return {
-        "cep": limpar_cep(cep),
+        "cep_destino": limpar_cep(cep),
         "uf": uf,
+        "centro_distribuicao": centro,
+        "cep_origem": cep_origem,
         "km": km,
         "fonte": fonte
     }
@@ -457,9 +491,11 @@ def frete():
     # Parâmetros
     cep_destino = request.args.get("cep_destino", "")
     prods = request.args.get("prods", "")
+    cep_origem_param = request.args.get("cep_origem", "")  # Origem específica (opcional)
 
     # Log para debug
     print(f"[DEBUG] CEP Destino: {cep_destino}")
+    print(f"[DEBUG] CEP Origem (param): {cep_origem_param}")
     print(f"[DEBUG] Produtos: {prods}")
 
     if not cep_destino:
@@ -488,8 +524,17 @@ def frete():
     except:
         pass
 
-    # Busca KM por faixa de CEP
-    km, km_fonte = buscar_km_por_cep(cep_destino)
+    # Escolhe a melhor origem automaticamente (mais próxima)
+    if cep_origem_param:
+        # Se veio origem específica, usa ela
+        cep_origem_usado = limpar_cep(cep_origem_param)
+        km, km_fonte, centro_nome = buscar_km_por_cep_e_origem(cep_origem_usado, cep_destino)
+    else:
+        # Escolhe automaticamente o CD mais próximo
+        cep_origem_usado, km, centro_nome = escolher_melhor_origem(cep_destino)
+        km_fonte = f"auto_{centro_nome}"
+    
+    print(f"[DEBUG] Origem escolhida: {centro_nome} ({cep_origem_usado})")
     print(f"[DEBUG] KM calculado: {km} ({km_fonte})")
 
     # Calcula frete por produto
@@ -543,8 +588,10 @@ def frete():
     <prazo_max>7</prazo_max>
     <entrega_domiciliar>1</entrega_domiciliar>
     <detalhes>
+      <origem>{centro_nome}</origem>
+      <cep_origem>{cep_origem_usado}</cep_origem>
       <km>{km:.1f}</km>
-      <uf>{uf or 'N/A'}</uf>
+      <uf_destino>{uf or 'N/A'}</uf_destino>
       <fonte_km>{km_fonte}</fonte_km>
       <valor_km>{valor_km:.2f}</valor_km>
       <itens>{"".join(itens_xml)}
@@ -558,14 +605,16 @@ def frete():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
     print("=" * 70)
-    print("🚀 API de Frete Bakof - Sistema de Faixas de CEP")
+    print("🚀 API de Frete Bakof - Múltiplos Centros de Distribuição")
     print("=" * 70)
-    print(f"📍 CEP Origem: {CEP_ORIGEM}")
-    print(f"🔑 Token: {TOKEN_SECRETO}")
+    print("📍 Centros de Distribuição:")
+    for cd in CENTROS_DISTRIBUICAO:
+        print(f"   • {cd['nome']} ({cd['uf']}) - CEP {cd['cep']}")
+    print(f"\n🔑 Token: {TOKEN_SECRETO}")
     print(f"📊 Produtos: {len(DATA['catalogo'])}")
-    print(f"📦 Faixas CEP: {len(FAIXAS_CEP_KM)}")
     print(f"💰 Valor/KM: R$ {DATA['consts']['VALOR_KM']:.2f}")
     print(f"🚛 Tamanho caminhão: {DATA['consts']['TAM_CAMINHAO']:.1f}m")
     print(f"🌐 Servidor: http://0.0.0.0:{port}")
+    print(f"\n✨ Sistema escolhe automaticamente o CD mais próximo!")
     print("=" * 70)
     app.run(host="0.0.0.0", port=port, debug=False)
