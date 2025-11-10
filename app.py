@@ -1,4 +1,4 @@
-# app.py — API de Frete com FAIXAS DE CEP (100 em 100 KM)
+# app.py - API de Frete Bakof - Sistema Robusto e Funcional
 import os
 import math
 import re
@@ -6,436 +6,376 @@ from typing import Dict, Any, List, Tuple, Optional
 import pandas as pd
 from flask import Flask, request, Response
 
-# ==========================
+# ============================================================================
 # CONFIGURAÇÕES
-# ==========================
+# ============================================================================
 TOKEN_SECRETO = os.getenv("TOKEN_SECRETO", "teste123")
-
-# MÚLTIPLOS CENTROS DE DISTRIBUIÇÃO
-CENTROS_DISTRIBUICAO = [
-    {"nome": "Frederico Westphalen-RS", "cep": "98400000", "uf": "RS"},
-    {"nome": "Campo Grande-MS", "cep": "79108630", "uf": "MS"},
-    {"nome": "Tauá-CE", "cep": "63660000", "uf": "CE"},
-    {"nome": "Montes Claros-MG", "cep": "39404627", "uf": "MG"},
-]
-
-# CEP de origem padrão (pode ser sobrescrito por variável de ambiente)
-CEP_ORIGEM_DEFAULT = os.getenv("CEP_ORIGEM", "98400000")
-
-ARQ_PLANILHA = os.getenv("PLANILHA_FRETE", "tabela de frete atualizada(2)(Recuperado Automaticamente).xlsx")
+ARQ_PLANILHA = os.getenv("PLANILHA_FRETE", "tabela_frete.xlsx")
 
 DEFAULT_VALOR_KM = float(os.getenv("DEFAULT_VALOR_KM", "7.0"))
 DEFAULT_TAM_CAMINHAO = float(os.getenv("DEFAULT_TAM_CAMINHAO", "8.5"))
-DEFAULT_KM = float(os.getenv("DEFAULT_KM", "450.0"))
 
-PALAVRAS_IGNORAR = {
-    "VALOR KM", "TAMANHO CAMINHAO", "TAMANHO CAMINHÃO",
-    "CALCULO DE FRETE POR TAMANHO DE PEÇA", "CÁLCULO DE FRETE POR TAMANHO DE PEÇA"
-}
+# Múltiplos centros de distribuição
+CENTROS_DISTRIBUICAO = [
+    {"nome": "Frederico Westphalen-RS", "sigla": "CD-RS", "cep": "98400000", "uf": "RS"},
+    {"nome": "Campo Grande-MS", "sigla": "CD-MS", "cep": "79108630", "uf": "MS"},
+    {"nome": "Tauá-CE", "sigla": "CD-CE", "cep": "63660000", "uf": "CE"},
+    {"nome": "Montes Claros-MG", "sigla": "CD-MG", "cep": "39404627", "uf": "MG"},
+]
 
 app = Flask(__name__)
 
-# ==========================
-# TABELA DE FAIXAS CEP -> KM PARA CADA CENTRO DE DISTRIBUIÇÃO
-# ==========================
+# ============================================================================
+# TABELA DE DISTÂNCIAS POR MUNICÍPIO (BASE DE DADOS LOCAL)
+# ============================================================================
 
-# Frederico Westphalen-RS (98400000)
-FAIXAS_FREDERICO_WESTPHALEN = [
-    ("98400000", "98419999", 10),    # Local
-    ("98415000", "98419999", 10),
-    ("98300000", "98399999", 50),
-    ("98420000", "98499999", 50),
-    ("99700000", "99799999", 100),
-    ("98000000", "98299999", 150),
-    ("99000000", "99099999", 200),
-    ("95000000", "95999999", 300),
-    ("97000000", "97999999", 300),
-    ("93000000", "93999999", 400),
-    ("92000000", "92999999", 450),
-    ("94000000", "94999999", 500),
-    ("90000000", "91999999", 500),
-    ("96000000", "96999999", 600),
-    ("89800000", "89899999", 200),   # SC
-    ("89500000", "89699999", 400),
-    ("89100000", "89299999", 500),
-    ("89000000", "89099999", 550),
-    ("88000000", "88099999", 600),
-    ("88300000", "88499999", 650),
-    ("88700000", "88899999", 700),
-    ("85800000", "85899999", 300),   # PR
-    ("85850000", "85869999", 400),
-    ("87000000", "87199999", 600),
-    ("86000000", "86199999", 700),
-    ("84000000", "84999999", 750),
-    ("83000000", "83999999", 800),
-    ("80000000", "82999999", 850),
+# Distâncias de Frederico Westphalen-RS
+DISTANCIAS_FREDERICO_WESTPHALEN = {
+    # RS
+    "98400000-98419999": 10,   # Local
+    "98300000-98499999": 50,   # Região
+    "99700000-99799999": 100,  # Erechim
+    "99000000-99199999": 200,  # Passo Fundo
+    "95000000-95999999": 300,  # Caxias do Sul
+    "97000000-97999999": 300,  # Santa Maria
+    "93000000-93999999": 400,  # Novo Hamburgo
+    "92000000-92999999": 450,  # Canoas
+    "90000000-91999999": 500,  # Porto Alegre
+    "96000000-96999999": 600,  # Pelotas
+    # SC
+    "89800000-89899999": 200,  # Chapecó
+    "89000000-89299999": 500,  # Blumenau/Joinville
+    "88000000-88099999": 600,  # Florianópolis
+    # PR
+    "85800000-85899999": 300,  # Cascavel
+    "87000000-87199999": 600,  # Maringá
+    "86000000-86199999": 700,  # Londrina
+    "80000000-82999999": 850,  # Curitiba
+    # SP
+    "01000000-19999999": 1400, # São Paulo
+    # Outros estados
+    "20000000-28999999": 1800, # RJ
+    "29000000-29999999": 1900, # ES
+    "30000000-39999999": 1700, # MG
+    "40000000-48999999": 2600, # BA
+    "79000000-79999999": 1600, # MS
+    "78000000-78999999": 2200, # MT
+}
+
+# Distâncias de Campo Grande-MS
+DISTANCIAS_CAMPO_GRANDE = {
+    "79100000-79199999": 10,   # Local
+    "79000000-79999999": 50,   # MS
+    "78000000-78999999": 300,  # Cuiabá-MT
+    "76800000-76999999": 400,  # Rondônia
+    "85800000-85899999": 500,  # Cascavel-PR
+    "80000000-82999999": 900,  # Curitiba-PR
+    "87000000-87199999": 800,  # Maringá-PR
+    "01000000-19999999": 1000, # São Paulo
+    "30000000-39999999": 1200, # MG
+    "70000000-72999999": 800,  # Brasília
+    "40000000-48999999": 2000, # BA
+    "90000000-99999999": 1500, # RS
+}
+
+# Distâncias de Tauá-CE
+DISTANCIAS_TAUA = {
+    "63660000-63669999": 10,   # Local
+    "63600000-63699999": 50,   # Região
+    "60000000-63999999": 200,  # Ceará
+    "64000000-64999999": 250,  # Piauí
+    "59000000-59999999": 300,  # RN
+    "58000000-58999999": 350,  # PB
+    "50000000-56999999": 400,  # PE
+    "57000000-57999999": 450,  # AL
+    "49000000-49999999": 500,  # SE
+    "65000000-65999999": 300,  # MA
+    "40000000-48999999": 800,  # BA
+    "30000000-39999999": 1500, # MG
+    "01000000-19999999": 2800, # SP
+}
+
+# Distâncias de Montes Claros-MG
+DISTANCIAS_MONTES_CLAROS = {
+    "39400000-39419999": 10,   # Local
+    "39000000-39999999": 100,  # Norte MG
+    "30000000-38999999": 300,  # BH e região
+    "40000000-48999999": 400,  # BA
+    "29000000-29999999": 500,  # ES
+    "70000000-76999999": 600,  # DF/GO
+    "20000000-28999999": 800,  # RJ
+    "01000000-19999999": 900,  # SP
+    "79000000-79999999": 1200, # MS
+    "60000000-63999999": 1400, # CE
+    "90000000-99999999": 2000, # RS
+}
+
+# Mapa de UF por CEP
+UF_RANGES = [
+    ("RS", "90000000", "99999999"), ("SC", "88000000", "89999999"),
+    ("PR", "80000000", "87999999"), ("SP", "01000000", "19999999"),
+    ("RJ", "20000000", "28999999"), ("ES", "29000000", "29999999"),
+    ("MG", "30000000", "39999999"), ("BA", "40000000", "48999999"),
+    ("SE", "49000000", "49999999"), ("PE", "50000000", "56999999"),
+    ("AL", "57000000", "57999999"), ("PB", "58000000", "58999999"),
+    ("RN", "59000000", "59999999"), ("CE", "60000000", "63999999"),
+    ("PI", "64000000", "64999999"), ("MA", "65000000", "65999999"),
+    ("PA", "66000000", "68999999"), ("AP", "68900000", "68999999"),
+    ("AM", "69000000", "69899999"), ("AC", "69900000", "69999999"),
+    ("RR", "69300000", "69399999"), ("DF", "70000000", "72999999"),
+    ("GO", "72800000", "76999999"), ("TO", "77000000", "77999999"),
+    ("MT", "78000000", "78999999"), ("MS", "79000000", "79999999"),
 ]
 
-# Campo Grande-MS (79108630)
-FAIXAS_CAMPO_GRANDE = [
-    ("79100000", "79129999", 10),    # Local
-    ("79000000", "79999999", 50),    # MS todo
-    ("78000000", "78999999", 300),   # MT - Cuiabá
-    ("76800000", "76999999", 400),   # RO - Rondônia
-    ("85800000", "85899999", 500),   # PR - Cascavel
-    ("85850000", "85869999", 600),   # PR - Foz do Iguaçu
-    ("80000000", "82999999", 900),   # PR - Curitiba
-    ("87000000", "87199999", 800),   # PR - Maringá
-    ("18000000", "18999999", 700),   # SP - Interior oeste
-    ("01000000", "08999999", 1000),  # SP - Capital
-]
-
-# Tauá-CE (63660000)
-FAIXAS_TAUA = [
-    ("63660000", "63669999", 10),    # Local
-    ("63600000", "63699999", 50),    # Região
-    ("60000000", "63999999", 200),   # CE todo
-    ("64000000", "64999999", 250),   # PI - Piauí
-    ("59000000", "59999999", 300),   # RN
-    ("58000000", "58999999", 350),   # PB
-    ("50000000", "56999999", 400),   # PE
-    ("57000000", "57999999", 450),   # AL
-    ("49000000", "49999999", 500),   # SE
-    ("65000000", "65999999", 300),   # MA
-    ("40000000", "48999999", 800),   # BA
-    ("66000000", "68999999", 1200),  # PA
-]
-
-# Montes Claros-MG (39404627)
-FAIXAS_MONTES_CLAROS = [
-    ("39400000", "39419999", 10),    # Local
-    ("39000000", "39999999", 100),   # Norte MG
-    ("38000000", "38999999", 150),   # Norte MG
-    ("30000000", "31999999", 300),   # BH
-    ("32000000", "34999999", 280),   # Contagem/Betim
-    ("35000000", "35999999", 250),   # Sul de Minas
-    ("36000000", "36999999", 200),   # Juiz de Fora
-    ("37000000", "37999999", 220),   # Sul de Minas
-    ("40000000", "48999999", 400),   # BA
-    ("29000000", "29999999", 500),   # ES
-    ("70000000", "72999999", 600),   # DF
-    ("74000000", "76999999", 650),   # GO
-]
-
-# ==========================
+# ============================================================================
 # FUNÇÕES AUXILIARES
-# ==========================
+# ============================================================================
+
 def limpar_cep(cep: str) -> str:
     """Remove formatação e retorna 8 dígitos"""
     s = re.sub(r'\D', '', str(cep or ""))
-    return s[:8].zfill(8) if s else "00000000"
+    return s[:8].zfill(8) if len(s) >= 8 else "00000000"
 
-def uf_por_cep(cep8: str) -> Optional[str]:
-    """Retorna UF baseado na faixa de CEP"""
-    UF_CEP_RANGES = [
-        ("SP", "01000000", "19999999"), ("RJ", "20000000", "28999999"),
-        ("ES", "29000000", "29999999"), ("MG", "30000000", "39999999"),
-        ("BA", "40000000", "48999999"), ("SE", "49000000", "49999999"),
-        ("PE", "50000000", "56999999"), ("AL", "57000000", "57999999"),
-        ("PB", "58000000", "58999999"), ("RN", "59000000", "59999999"),
-        ("CE", "60000000", "63999999"), ("PI", "64000000", "64999999"),
-        ("MA", "65000000", "65999999"), ("PA", "66000000", "68899999"),
-        ("AP", "68900000", "68999999"), ("AM", "69000000", "69899999"),
-        ("RR", "69300000", "69399999"), ("AC", "69900000", "69999999"),
-        ("DF", "70000000", "73699999"), ("GO", "72800000", "76799999"),
-        ("TO", "77000000", "77999999"), ("MT", "78000000", "78899999"),
-        ("MS", "79000000", "79999999"), ("PR", "80000000", "87999999"),
-        ("SC", "88000000", "89999999"), ("RS", "90000000", "99999999"),
-    ]
+def uf_por_cep(cep: str) -> Optional[str]:
+    """Retorna UF baseado no CEP"""
+    cep_limpo = limpar_cep(cep)
     try:
-        n = int(cep8)
+        cep_num = int(cep_limpo)
+        for uf, inicio, fim in UF_RANGES:
+            if int(inicio) <= cep_num <= int(fim):
+                return uf
     except:
-        return None
-    for uf, a, b in UF_CEP_RANGES:
-        if int(a) <= n <= int(b):
-            return uf
+        pass
     return None
 
-def buscar_km_por_cep_e_origem(cep_origem: str, cep_destino: str) -> Tuple[float, str, str]:
+def buscar_km_por_faixa(tabela: Dict[str, int], cep: str) -> Optional[int]:
+    """Busca KM em uma tabela de faixas"""
+    cep_limpo = limpar_cep(cep)
+    try:
+        cep_num = int(cep_limpo)
+        for faixa, km in tabela.items():
+            inicio, fim = faixa.split("-")
+            if int(inicio) <= cep_num <= int(fim):
+                return km
+    except:
+        pass
+    return None
+
+def escolher_melhor_cd(cep_destino: str) -> Tuple[str, str, str, int, str]:
     """
-    Busca KM baseado no CEP de origem e destino
-    Retorna: (km, fonte, centro_distribuicao)
+    Escolhe o centro de distribuição mais próximo
+    Retorna: (nome_cd, sigla_cd, cep_cd, km, fonte)
     """
-    cep_dest = limpar_cep(cep_destino)
-    cep_dest_num = int(cep_dest)
+    resultados = []
     
-    # Identifica qual centro de distribuição está sendo usado
-    cep_orig_limpo = limpar_cep(cep_origem)
-    centro_nome = "Desconhecido"
+    # Testa cada centro de distribuição
+    tabelas = [
+        (CENTROS_DISTRIBUICAO[0], DISTANCIAS_FREDERICO_WESTPHALEN),
+        (CENTROS_DISTRIBUICAO[1], DISTANCIAS_CAMPO_GRANDE),
+        (CENTROS_DISTRIBUICAO[2], DISTANCIAS_TAUA),
+        (CENTROS_DISTRIBUICAO[3], DISTANCIAS_MONTES_CLAROS),
+    ]
     
-    for centro in CENTROS_DISTRIBUICAO:
-        if limpar_cep(centro["cep"]) == cep_orig_limpo:
-            centro_nome = centro["nome"]
-            break
+    for cd, tabela in tabelas:
+        km = buscar_km_por_faixa(tabela, cep_destino)
+        if km:
+            resultados.append((cd["nome"], cd["sigla"], cd["cep"], km, "tabela_cd"))
     
-    # Seleciona a tabela de faixas correta
-    faixas = []
-    if cep_orig_limpo == "98400000":
-        faixas = FAIXAS_FREDERICO_WESTPHALEN
-    elif cep_orig_limpo == "79108630":
-        faixas = FAIXAS_CAMPO_GRANDE
-    elif cep_orig_limpo == "63660000":
-        faixas = FAIXAS_TAUA
-    elif cep_orig_limpo == "39404627":
-        faixas = FAIXAS_MONTES_CLAROS
-    
-    # Busca na tabela específica
-    for cep_ini, cep_fim, km in faixas:
-        if int(cep_ini) <= cep_dest_num <= int(cep_fim):
-            return (float(km), f"faixa_{centro_nome}", centro_nome)
+    # Se encontrou, retorna o mais próximo
+    if resultados:
+        resultados.sort(key=lambda x: x[3])  # Ordena por KM
+        return resultados[0]
     
     # Fallback por UF
-    uf = uf_por_cep(cep_dest)
-    if uf:
-        km_uf = {
-            "RS": 150, "SC": 450, "PR": 700, "SP": 1100, "RJ": 1500,
-            "MG": 1600, "ES": 1800, "MS": 1600, "MT": 2200, "DF": 2000,
-            "GO": 2100, "TO": 2500, "BA": 2600, "SE": 2700, "AL": 2800,
-            "PE": 3000, "PB": 3100, "RN": 3200, "CE": 3400, "PI": 3300,
-            "MA": 3500, "PA": 3800, "AP": 4100, "AM": 4200, "RO": 4000,
-            "AC": 4300, "RR": 4500,
-        }
-        return (float(km_uf.get(uf, DEFAULT_KM)), f"uf_{uf}", centro_nome)
-    
-    return (DEFAULT_KM, "default", centro_nome)
+    uf = uf_por_cep(cep_destino)
+    km_uf = {
+        "RS": 150, "SC": 450, "PR": 700, "SP": 1100, "RJ": 1500,
+        "MG": 1600, "ES": 1800, "MS": 1600, "MT": 2200, "DF": 2000,
+        "GO": 2100, "TO": 2500, "BA": 2600, "SE": 2700, "AL": 2800,
+        "PE": 3000, "PB": 3100, "RN": 3200, "CE": 3400, "PI": 3300,
+        "MA": 3500, "PA": 3800, "AP": 4100, "AM": 4200, "RO": 4000,
+        "AC": 4300, "RR": 4500,
+    }
+    km = km_uf.get(uf, 450)
+    return (CENTROS_DISTRIBUICAO[0]["nome"], CENTROS_DISTRIBUICAO[0]["sigla"], CENTROS_DISTRIBUICAO[0]["cep"], km, f"fallback_uf_{uf}")
 
-def escolher_melhor_origem(cep_destino: str) -> Tuple[str, float, str]:
-    """
-    Escolhe o centro de distribuição mais próximo do destino
-    Retorna: (cep_origem, km, nome_centro)
-    """
-    melhor_km = float('inf')
-    melhor_origem = CENTROS_DISTRIBUICAO[0]["cep"]
-    melhor_centro = CENTROS_DISTRIBUICAO[0]["nome"]
-    melhor_fonte = "default"
-    
-    for centro in CENTROS_DISTRIBUICAO:
-        km, fonte, nome = buscar_km_por_cep_e_origem(centro["cep"], cep_destino)
-        if km < melhor_km:
-            melhor_km = km
-            melhor_origem = centro["cep"]
-            melhor_centro = nome
-            melhor_fonte = fonte
-    
-    return (melhor_origem, melhor_km, melhor_centro)
-
-# ==========================
+# ============================================================================
 # FUNÇÕES DA PLANILHA
-# ==========================
-def limpar_texto(nome: Any) -> str:
-    if not isinstance(nome, str):
-        return ""
-    return " ".join(nome.replace("\n", " ").split()).strip()
+# ============================================================================
 
-def extrai_numero_linha(row) -> Optional[float]:
-    for v in row:
-        if v is None or pd.isna(v):
-            continue
-        s = str(v).strip().upper()
-        if s in ("", "NAN", "NONE", "NULL"):
-            continue
-        s = s.replace(",", ".")
-        s = re.sub(r'(METROS?|KM|R\$|REAIS|/KM)', '', s, flags=re.IGNORECASE).strip()
-        try:
-            f = float(s)
-            if math.isfinite(f) and f > 0:
-                return f
-        except:
-            pass
-    return None
+def limpar_texto(texto: Any) -> str:
+    if not isinstance(texto, str):
+        return ""
+    return " ".join(texto.replace("\n", " ").split()).strip()
+
+def extrair_numero(valor) -> Optional[float]:
+    """Extrai número de uma célula"""
+    if valor is None or pd.isna(valor):
+        return None
+    s = str(valor).strip().upper().replace(",", ".")
+    s = re.sub(r'[^\d\.]', '', s)
+    try:
+        f = float(s)
+        return f if math.isfinite(f) and f > 0 else None
+    except:
+        return None
 
 def carregar_constantes(xls: pd.ExcelFile) -> Dict[str, float]:
+    """Carrega VALOR_KM e TAMANHO_CAMINHAO da planilha"""
     valor_km = DEFAULT_VALOR_KM
     tam_caminhao = DEFAULT_TAM_CAMINHAO
     
-    for aba in ("BASE_CALCULO", "D", "BASE", "CONSTANTES"):
+    for aba in ["BASE_CALCULO", "D", "CONSTANTES", "BASE"]:
         if aba not in xls.sheet_names:
             continue
         try:
-            raw = pd.read_excel(xls, aba, header=None)
-            for _, row in raw.iterrows():
-                texto = " ".join([str(v).upper() for v in row if isinstance(v, str)])
-                if "VALOR" in texto or "KM" in texto:
-                    num = extrai_numero_linha(row)
-                    if num and 3 <= num <= 50:
-                        valor_km = num
-                if "TAMANHO" in texto and "CAMINH" in texto:
-                    num = extrai_numero_linha(row)
-                    if num and 3 <= num <= 20:
-                        tam_caminhao = num
-        except:
-            pass
+            df = pd.read_excel(xls, aba, header=None)
+            for _, row in df.iterrows():
+                texto_linha = " ".join([str(v).upper() for v in row if pd.notna(v)])
+                
+                if "VALOR" in texto_linha and "KM" in texto_linha:
+                    for v in row:
+                        num = extrair_numero(v)
+                        if num and 3 <= num <= 50:
+                            valor_km = num
+                            break
+                
+                if "TAMANHO" in texto_linha and "CAMINH" in texto_linha:
+                    for v in row:
+                        num = extrair_numero(v)
+                        if num and 3 <= num <= 20:
+                            tam_caminhao = num
+                            break
+        except Exception as e:
+            print(f"[WARN] Erro ao ler aba {aba}: {e}")
     
     return {"VALOR_KM": valor_km, "TAM_CAMINHAO": tam_caminhao}
 
-def carregar_cadastro_produtos(xls: pd.ExcelFile) -> pd.DataFrame:
-    for aba in ("CADASTRO_PRODUTO", "CADASTRO", "PRODUTOS"):
+def carregar_produtos(xls: pd.ExcelFile) -> Dict[str, float]:
+    """Carrega catálogo de produtos com diâmetros"""
+    for aba in ["CADASTRO_PRODUTO", "CADASTRO", "PRODUTOS"]:
         if aba not in xls.sheet_names:
             continue
         try:
-            raw = pd.read_excel(xls, aba, header=None)
-            nome_col = 2 if raw.shape[1] > 2 else 0
-            dim1_col = 3 if raw.shape[1] > 3 else (1 if raw.shape[1] > 1 else 0)
-            dim2_col = 4 if raw.shape[1] > 4 else (2 if raw.shape[1] > 2 else 1)
+            df = pd.read_excel(xls, aba, header=None)
+            # Assume: col 0 ou 2 = nome, col 3 = dim1, col 4 = dim2
+            catalogo = {}
             
-            df = raw[[nome_col, dim1_col, dim2_col]].copy()
-            df.columns = ["nome", "dim1", "dim2"]
-            df["nome"] = df["nome"].apply(limpar_texto)
-            df = df[~df["nome"].str.upper().isin(PALAVRAS_IGNORAR)]
-            df = df[df["nome"].astype(str).str.len() > 0]
-            df["dim1"] = pd.to_numeric(df["dim1"], errors="coerce").fillna(0.0)
-            df["dim2"] = pd.to_numeric(df["dim2"], errors="coerce").fillna(0.0)
-            df = df.drop_duplicates(subset=["nome"], keep="first").reset_index(drop=True)
-            return df[["nome", "dim1", "dim2"]]
-        except:
-            pass
+            for _, row in df.iterrows():
+                try:
+                    # Tenta diferentes estruturas
+                    nome = limpar_texto(row[2] if len(row) > 2 else row[0])
+                    dim1 = extrair_numero(row[3] if len(row) > 3 else 0) or 0
+                    dim2 = extrair_numero(row[4] if len(row) > 4 else 0) or 0
+                    
+                    if nome and (dim1 > 0 or dim2 > 0):
+                        # Usa a maior dimensão
+                        catalogo[nome] = max(dim1, dim2)
+                except:
+                    continue
+            
+            if catalogo:
+                print(f"[OK] Carregados {len(catalogo)} produtos da planilha")
+                return catalogo
+        except Exception as e:
+            print(f"[WARN] Erro ao ler aba {aba}: {e}")
     
-    return pd.DataFrame(columns=["nome", "dim1", "dim2"])
+    return {}
 
-def tipo_produto(nome: str) -> str:
-    n = (nome or "").lower()
-    if "fossa" in n:
-        return "fossa"
-    if "vertical" in n:
-        return "vertical"
-    if "horizontal" in n:
-        return "horizontal"
-    if "tc" in n and ("10.000" in n or "10000" in n or "10.0" in n):
-        return "tc_ate_10k"
-    return "auto"
-
-def tamanho_peca_por_nome(nome: str, dim1: float, dim2: float) -> float:
-    t = tipo_produto(nome)
-    if t in ("fossa", "vertical"):
-        return float(dim1 or 0.0)
-    if t in ("horizontal", "tc_ate_10k"):
-        return float(dim2 or 0.0)
-    return float(max(float(dim1 or 0.0), float(dim2 or 0.0)))
-
-def montar_catalogo_tamanho(df: pd.DataFrame) -> Dict[str, float]:
-    mapa = {}
-    for _, r in df.iterrows():
-        try:
-            nome = limpar_texto(r["nome"])
-            if not nome or nome.upper() in PALAVRAS_IGNORAR:
-                continue
-            tam = tamanho_peca_por_nome(nome, float(r["dim1"]), float(r["dim2"]))
-            if tam > 0:
-                mapa[nome] = tam
-        except:
-            pass
-    return mapa
-
-def carregar_tudo() -> Dict[str, Any]:
+def carregar_dados() -> Dict[str, Any]:
+    """Carrega todos os dados da planilha"""
     try:
         xls = pd.ExcelFile(ARQ_PLANILHA)
         consts = carregar_constantes(xls)
-        cadastro = carregar_cadastro_produtos(xls)
-        catalogo = montar_catalogo_tamanho(cadastro)
-        print(f"[OK] Planilha carregada: {len(catalogo)} produtos")
-        return {"consts": consts, "catalogo": catalogo}
+        produtos = carregar_produtos(xls)
+        return {"consts": consts, "produtos": produtos}
     except Exception as e:
-        print(f"[WARN] Planilha não encontrada: {e}")
+        print(f"[INFO] Usando valores padrão (planilha não encontrada)")
         return {
             "consts": {"VALOR_KM": DEFAULT_VALOR_KM, "TAM_CAMINHAO": DEFAULT_TAM_CAMINHAO},
-            "catalogo": {}
+            "produtos": {}
         }
 
-DATA = carregar_tudo()
+DATA = carregar_dados()
 
-# ==========================
+# ============================================================================
 # CÁLCULO DE FRETE
-# ==========================
-def calcula_valor_item(tamanho_peca_m: float, km: float, valor_km: float, tam_caminhao: float) -> float:
-    """Fórmula: (tamanho_peça / tamanho_caminhão) * valor_km * km"""
-    if tamanho_peca_m <= 0 or tam_caminhao <= 0:
-        return 0.0
-    ocupacao = float(tamanho_peca_m) / float(tam_caminhao)
-    return round(float(valor_km) * float(km) * ocupacao, 2)
+# ============================================================================
 
-def parse_prods(prods_str: str) -> List[Dict[str, Any]]:
-    """Parse dos produtos no formato Tray"""
-    itens = []
-    if not prods_str:
-        return itens
+def calcular_valor_frete(tamanho_m: float, km: float, valor_km: float, tam_caminhao: float) -> float:
+    """
+    Fórmula: (tamanho_produto / tamanho_caminhão) × valor_km × km
+    """
+    if tamanho_m <= 0 or tam_caminhao <= 0:
+        return 0.0
     
-    # Tray pode enviar com / ou |
+    ocupacao = tamanho_m / tam_caminhao
+    valor = ocupacao * valor_km * km
+    return round(valor, 2)
+
+def parse_produtos(prods_str: str) -> List[Dict[str, Any]]:
+    """Parse produtos formato Tray: comp;larg;alt;cub;qty;peso;codigo;valor"""
+    itens = []
+    
+    # Separa múltiplos produtos
     blocos = []
-    for sep in ("/", "|"):
+    for sep in ["/", "|"]:
         if sep in prods_str:
-            blocos = [b for b in prods_str.split(sep) if b.strip()]
+            blocos = [b.strip() for b in prods_str.split(sep) if b.strip()]
             break
     if not blocos:
         blocos = [prods_str]
-
-    def norm_num(x):
-        if x is None:
-            return 0.0
-        s = str(x).strip().lower()
-        if s in ("", "null", "none", "nan"):
-            return 0.0
-        s = s.replace(",", ".")
+    
+    for bloco in blocos:
         try:
-            return float(s)
-        except:
-            return 0.0
-
-    def cm_to_m(x):
-        """Converte cm para metros se necessário"""
-        if not x or x == 0:
-            return 0.0
-        # Se maior que 20, assume que está em cm
-        return x / 100.0 if x > 20 else x
-
-    for raw in blocos:
-        try:
-            partes = raw.split(";")
+            partes = bloco.split(";")
             if len(partes) < 8:
-                print(f"[WARN] Item com menos de 8 campos: {raw}")
+                print(f"[WARN] Produto com menos de 8 campos: {bloco}")
                 continue
             
-            comp_raw, larg_raw, alt_raw, cub, qty, peso, codigo, valor = partes[:8]
+            comp = float(partes[0].replace(",", ".") or 0)
+            larg = float(partes[1].replace(",", ".") or 0)
+            alt = float(partes[2].replace(",", ".") or 0)
+            qty = int(float(partes[4].replace(",", ".") or 1))
+            codigo = partes[6].strip()
             
-            comp = cm_to_m(norm_num(comp_raw))
-            larg = cm_to_m(norm_num(larg_raw))
-            alt = cm_to_m(norm_num(alt_raw))
+            # Converte cm para metros se necessário
+            comp = comp / 100 if comp > 20 else comp
+            larg = larg / 100 if larg > 20 else larg
+            alt = alt / 100 if alt > 20 else alt
             
-            print(f"[DEBUG] Parse: comp={comp_raw}->{comp:.2f}m, larg={larg_raw}->{larg:.2f}m, alt={alt_raw}->{alt:.2f}m")
-            
-            item = {
+            itens.append({
                 "comp": comp,
                 "larg": larg,
                 "alt": alt,
-                "cub": norm_num(cub),
-                "qty": int(norm_num(qty)) if norm_num(qty) > 0 else 1,
-                "peso": norm_num(peso),
-                "codigo": (codigo or "").strip(),
-                "valor": norm_num(valor),
-            }
-            itens.append(item)
+                "qty": max(1, qty),
+                "codigo": codigo or "Item"
+            })
+            
         except Exception as e:
-            print(f"[ERROR] Erro parse item: {raw} - {e}")
+            print(f"[ERROR] Erro ao processar: {bloco} - {e}")
     
     return itens
 
-# ==========================
+# ============================================================================
 # ENDPOINTS
-# ==========================
-@app.route("/", methods=["GET", "POST"])
+# ============================================================================
+
+@app.route("/", methods=["GET"])
 def index():
-    """Endpoint principal - redireciona para cálculo de frete se tiver parâmetros"""
-    # Se vier com parâmetros da Tray, processa como frete
-    if request.args.get("cep_destino") or request.args.get("prods"):
-        return frete()
+    """Rota principal - redireciona para frete se tiver parâmetros"""
+    if request.args.get("cep_destino"):
+        return calcular_frete()
     
     return {
-        "api": "Bakof Frete",
-        "versao": "4.0 - Faixas de CEP",
+        "status": "online",
+        "api": "Bakof Frete v5.0",
+        "centros_distribuicao": len(CENTROS_DISTRIBUICAO),
         "endpoints": {
-            "/health": "Status da API",
+            "/": "Calcular frete (Tray)",
             "/frete": "Calcular frete",
-            "/": "Calcular frete (compatível Tray)",
-            "/consultar-cep": "Consultar KM de um CEP"
+            "/health": "Status da API",
+            "/consultar": "Consultar KM para um CEP"
         }
     }
 
@@ -443,145 +383,119 @@ def index():
 def health():
     return {
         "ok": True,
-        "centros_distribuicao": [
-            {"nome": cd["nome"], "cep": cd["cep"], "uf": cd["uf"]} 
-            for cd in CENTROS_DISTRIBUICAO
-        ],
-        "valores": DATA["consts"],
-        "produtos_catalogo": len(DATA["catalogo"]),
+        "versao": "5.0",
+        "centros": [f"{cd['sigla']} - {cd['nome']}" for cd in CENTROS_DISTRIBUICAO],
+        "produtos_cadastrados": len(DATA["produtos"]),
+        "valor_km": DATA["consts"]["VALOR_KM"],
+        "tamanho_caminhao": DATA["consts"]["TAM_CAMINHAO"]
     }
 
-@app.route("/consultar-cep")
-def consultar_cep():
-    """Endpoint para consultar KM de um CEP específico"""
+@app.route("/consultar")
+def consultar():
+    """Consulta KM para um CEP"""
     cep = request.args.get("cep", "")
-    origem = request.args.get("origem", "")  # Origem específica (opcional)
-    
     if not cep:
-        return {"erro": "Informe o parâmetro 'cep'"}
+        return {"erro": "Informe o parâmetro 'cep'"}, 400
     
-    if origem:
-        # Consulta com origem específica
-        km, fonte, centro = buscar_km_por_cep_e_origem(origem, cep)
-        cep_origem = origem
-    else:
-        # Escolhe melhor origem automaticamente
-        cep_origem, km, centro = escolher_melhor_origem(cep)
-        fonte = f"auto_{centro}"
-    
-    uf = uf_por_cep(limpar_cep(cep))
+    nome_cd, sigla_cd, cep_cd, km, fonte = escolher_melhor_cd(cep)
+    uf = uf_por_cep(cep)
     
     return {
         "cep_destino": limpar_cep(cep),
         "uf": uf,
-        "centro_distribuicao": centro,
-        "cep_origem": cep_origem,
-        "km": km,
+        "centro_distribuicao": f"{sigla_cd} - {nome_cd}",
+        "sigla_cd": sigla_cd,
+        "nome_cd": nome_cd,
+        "cep_origem": cep_cd,
+        "distancia_km": km,
         "fonte": fonte
     }
 
-@app.route("/frete", methods=["GET", "POST"])
-def frete():
-    """Endpoint de cálculo de frete - compatível com Tray"""
-    # Autenticação (opcional - Tray não envia token sempre)
+@app.route("/frete", methods=["GET"])
+def calcular_frete():
+    """Endpoint principal de cálculo de frete"""
+    
+    # Autenticação (opcional)
     token = request.args.get("token", "")
-    # Permite acesso sem token OU com token correto
     if token and token != TOKEN_SECRETO:
         return Response("Token inválido", status=403)
-
-    # Parâmetros
+    
+    # Parâmetros obrigatórios
     cep_destino = request.args.get("cep_destino", "")
     prods = request.args.get("prods", "")
-    cep_origem_param = request.args.get("cep_origem", "")  # Origem específica (opcional)
-
-    # Log para debug
-    print(f"[DEBUG] CEP Destino: {cep_destino}")
-    print(f"[DEBUG] CEP Origem (param): {cep_origem_param}")
-    print(f"[DEBUG] Produtos: {prods}")
-
+    
+    print(f"\n{'='*60}")
+    print(f"[REQUEST] CEP: {cep_destino}, Produtos: {prods[:50]}...")
+    
     if not cep_destino:
         return Response("Parâmetro 'cep_destino' obrigatório", status=400)
-    
     if not prods:
         return Response("Parâmetro 'prods' obrigatório", status=400)
-
+    
     # Parse produtos
-    itens = parse_prods(prods)
-    print(f"[DEBUG] Itens parseados: {len(itens)}")
-    
+    itens = parse_produtos(prods)
     if not itens:
-        return Response("Nenhum item válido em 'prods'", status=400)
-
-    # Constantes base
-    valor_km = DATA["consts"].get("VALOR_KM", DEFAULT_VALOR_KM)
-    tam_caminhao = DATA["consts"].get("TAM_CAMINHAO", DEFAULT_TAM_CAMINHAO)
-
-    # Permite override via parâmetro
-    try:
-        if request.args.get("valor_km"):
-            valor_km = float(str(request.args["valor_km"]).replace(",", "."))
-        if request.args.get("tam_caminhao"):
-            tam_caminhao = float(str(request.args["tam_caminhao"]).replace(",", "."))
-    except:
-        pass
-
-    # Escolhe a melhor origem automaticamente (mais próxima)
-    if cep_origem_param:
-        # Se veio origem específica, usa ela
-        cep_origem_usado = limpar_cep(cep_origem_param)
-        km, km_fonte, centro_nome = buscar_km_por_cep_e_origem(cep_origem_usado, cep_destino)
-    else:
-        # Escolhe automaticamente o CD mais próximo
-        cep_origem_usado, km, centro_nome = escolher_melhor_origem(cep_destino)
-        km_fonte = f"auto_{centro_nome}"
+        return Response("Nenhum produto válido", status=400)
     
-    print(f"[DEBUG] Origem escolhida: {centro_nome} ({cep_origem_usado})")
-    print(f"[DEBUG] KM calculado: {km} ({km_fonte})")
-
+    print(f"[INFO] Produtos parseados: {len(itens)}")
+    
+    # Constantes
+    valor_km = DATA["consts"]["VALOR_KM"]
+    tam_caminhao = DATA["consts"]["TAM_CAMINHAO"]
+    
+    # Permite override
+    if request.args.get("valor_km"):
+        valor_km = float(request.args["valor_km"].replace(",", "."))
+    if request.args.get("tam_caminhao"):
+        tam_caminhao = float(request.args["tam_caminhao"].replace(",", "."))
+    
+    # Escolhe melhor CD
+    nome_cd, sigla_cd, cep_cd, km, fonte = escolher_melhor_cd(cep_destino)
+    print(f"[{sigla_cd}] {nome_cd} ({cep_cd}) - {km} km ({fonte})")
+    
     # Calcula frete por produto
     total = 0.0
     itens_xml = []
     
-    for it in itens:
-        nome = it["codigo"] or "Item"
+    for item in itens:
+        codigo = item["codigo"]
         
         # Busca tamanho no catálogo
-        tam_catalogo = DATA["catalogo"].get(nome)
-        if tam_catalogo is None:
-            # Usa a maior dimensão do produto
-            tam_catalogo = max(it["comp"], it["larg"], it["alt"])
-            # Se não tem dimensões, usa diâmetro padrão de 2m
-            if tam_catalogo == 0:
-                tam_catalogo = 2.0
+        tamanho = DATA["produtos"].get(codigo)
+        if not tamanho:
+            # Usa maior dimensão
+            tamanho = max(item["comp"], item["larg"], item["alt"])
+            if tamanho == 0:
+                tamanho = 2.0  # Padrão
         
-        print(f"[DEBUG] Produto: {nome}, Tamanho: {tam_catalogo:.3f}m")
+        print(f"[ITEM] {codigo}: {tamanho:.2f}m x {item['qty']}un")
         
-        # Calcula valores
-        v_unit = calcula_valor_item(tam_catalogo, km, valor_km, tam_caminhao)
-        v_tot = v_unit * max(1, it["qty"])
-        total += v_tot
+        # Calcula valor
+        valor_unit = calcular_valor_frete(tamanho, km, valor_km, tam_caminhao)
+        valor_total = valor_unit * item["qty"]
+        total += valor_total
         
-        print(f"[DEBUG] Valor unitário: R$ {v_unit:.2f}, Total: R$ {v_tot:.2f}")
+        print(f"       R$ {valor_unit:.2f} x {item['qty']} = R$ {valor_total:.2f}")
         
         itens_xml.append(f"""
       <item>
-        <codigo>{nome}</codigo>
-        <quantidade>{it['qty']}</quantidade>
-        <tamanho_metros>{tam_catalogo:.3f}</tamanho_metros>
-        <valor_unitario>{v_unit:.2f}</valor_unitario>
-        <valor_total>{v_tot:.2f}</valor_total>
+        <codigo>{codigo}</codigo>
+        <quantidade>{item['qty']}</quantidade>
+        <tamanho_m>{tamanho:.3f}</tamanho_m>
+        <valor_unit>{valor_unit:.2f}</valor_unit>
+        <valor_total>{valor_total:.2f}</valor_total>
       </item>""")
-
-    print(f"[DEBUG] VALOR TOTAL: R$ {total:.2f}")
-
-    # Monta resposta XML (formato Tray)
-    uf = uf_por_cep(limpar_cep(cep_destino))
     
-    xml = f"""<?xml version="1.0"?>
+    print(f"[TOTAL] R$ {total:.2f}")
+    print(f"{'='*60}\n")
+    
+    # Resposta XML (formato Tray)
+    uf = uf_por_cep(cep_destino)
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <cotacao>
   <resultado>
     <codigo>BAKOF</codigo>
-    <transportadora>Bakof Logistica</transportadora>
+    <transportadora>Bakof Logistica - {sigla_cd}</transportadora>
     <servico>Transporte Rodoviario</servico>
     <transporte>TERRESTRE</transporte>
     <valor>{total:.2f}</valor>
@@ -589,12 +503,12 @@ def frete():
     <prazo_max>7</prazo_max>
     <entrega_domiciliar>1</entrega_domiciliar>
     <detalhes>
-      <origem>{centro_nome}</origem>
-      <cep_origem>{cep_origem_usado}</cep_origem>
-      <km>{km:.1f}</km>
+      <centro_distribuicao>{sigla_cd}</centro_distribuicao>
+      <origem>{nome_cd}</origem>
+      <cep_origem>{cep_cd}</cep_origem>
+      <distancia_km>{km}</distancia_km>
       <uf_destino>{uf or 'N/A'}</uf_destino>
-      <fonte_km>{km_fonte}</fonte_km>
-      <valor_km>{valor_km:.2f}</valor_km>
+      <valor_por_km>{valor_km:.2f}</valor_por_km>
       <itens>{"".join(itens_xml)}
       </itens>
     </detalhes>
@@ -603,19 +517,25 @@ def frete():
     
     return Response(xml, mimetype="application/xml")
 
+# ============================================================================
+# INICIALIZAÇÃO
+# ============================================================================
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
-    print("=" * 70)
-    print("🚀 API de Frete Bakof - Múltiplos Centros de Distribuição")
-    print("=" * 70)
+    
+    print("\n" + "="*70)
+    print("🚀 API DE FRETE BAKOF - SISTEMA OTIMIZADO")
+    print("="*70)
     print("📍 Centros de Distribuição:")
     for cd in CENTROS_DISTRIBUICAO:
-        print(f"   • {cd['nome']} ({cd['uf']}) - CEP {cd['cep']}")
-    print(f"\n🔑 Token: {TOKEN_SECRETO}")
-    print(f"📊 Produtos: {len(DATA['catalogo'])}")
-    print(f"💰 Valor/KM: R$ {DATA['consts']['VALOR_KM']:.2f}")
+        print(f"   • {cd['sigla']} - {cd['nome']} ({cd['uf']}) - CEP {cd['cep']}")
+    print(f"\n💰 Valor por KM: R$ {DATA['consts']['VALOR_KM']:.2f}")
     print(f"🚛 Tamanho caminhão: {DATA['consts']['TAM_CAMINHAO']:.1f}m")
+    print(f"📦 Produtos cadastrados: {len(DATA['produtos'])}")
+    print(f"🔑 Token: {TOKEN_SECRETO}")
     print(f"🌐 Servidor: http://0.0.0.0:{port}")
-    print(f"\n✨ Sistema escolhe automaticamente o CD mais próximo!")
-    print("=" * 70)
+    print(f"\n✨ Sistema escolhe automaticamente o CD mais próximo do destino!")
+    print("="*70 + "\n")
+    
     app.run(host="0.0.0.0", port=port, debug=False)
